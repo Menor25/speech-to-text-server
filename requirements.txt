@@ -4,3 +4,4 @@ requests
 transformers
 datasets
 torch
+gunicorn

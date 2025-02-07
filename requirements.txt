@@ -6,4 +6,3 @@ datasets
 torch
 gunicorn
 python-dotenv
-os

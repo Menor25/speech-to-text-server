@@ -1,0 +1,17 @@
+[
+    {
+        "rating": 5,
+        "feedback": "Great",
+        "transcript": "Good morning, sir. Switch on the T."
+    },
+    {
+        "rating": 5,
+        "feedback": "Good",
+        "transcript": "Open your email."
+    },
+    {
+        "rating": 5,
+        "feedback": "Perfect",
+        "transcript": "Hello. How are you?"
+    }
+]

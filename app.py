@@ -91,6 +91,8 @@ import requests
 import json
 import os
 from dotenv import load_dotenv
+from pydub import AudioSegment
+from io import BytesIO
 
 app = Flask(__name__)
 # Allow requests from http://localhost:3000
@@ -101,27 +103,93 @@ CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 REVIEWS_FILE = "reviews.json"
 
 # Hugging Face API details
-WAV2VEC_API_URL = "https://api-inference.huggingface.co/models/facebook/wav2vec2-large-960h"
+WAV2VEC_API_URL = "https://api-inference.huggingface.co/models/facebook/wav2vec2-large-960h-lv60-self"
+
+# WAV2VEC_API_URL = "https://api-inference.huggingface.co/models/facebook/wav2vec2-large-960h"
 BERT_API_URL = "https://api-inference.huggingface.co/models/bert-base-uncased"
 T5_API_URL = "https://api-inference.huggingface.co/models/t5-small"
 
 load_dotenv()  # Load variables from .env file
-HF_API_TOKEN  = os.getenv("HF_API_KEY")
+# HF_API_TOKEN  = os.getenv("HF_API_KEY")
+# print("HF_API_TOKEN:", HF_API_TOKEN)
 
-# Headers for Hugging Face API requests
-headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
+# # Headers for Hugging Face API requests
+# headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
+ASSEMBLYAI_API_URL = "https://api.assemblyai.com/v2"
+ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
+assemblyai_headers = {
+    "authorization": ASSEMBLYAI_API_KEY,
+    "content-type": "application/json"
+}
+
+
+# def transcribe_audio(audio_data):
+#     """Transcribe audio using Wav2Vec 2.0 via Hugging Face API."""
+#     response = requests.post(WAV2VEC_API_URL, headers=headers, data=audio_data)
+#     if response.status_code == 200:
+#         return response.json()["text"]
+#     return None
 
 def transcribe_audio(audio_data):
-    """Transcribe audio using Wav2Vec 2.0 via Hugging Face API."""
-    response = requests.post(WAV2VEC_API_URL, headers=headers, data=audio_data)
-    if response.status_code == 200:
-        return response.json()["text"]
-    return None
+    # Step 1: Upload audio file to AssemblyAI
+    upload_response = requests.post(
+        f"{ASSEMBLYAI_API_URL}/upload",
+        headers={"authorization": ASSEMBLYAI_API_KEY},
+        data=audio_data
+    )
+
+    if upload_response.status_code != 200:
+        print("❌ Upload failed:", upload_response.text)
+        return None
+
+    audio_url = upload_response.json()["upload_url"]
+    print("✅ Audio uploaded:", audio_url)
+
+    # Step 2: Request transcription
+    transcript_request = {
+        "audio_url": audio_url
+    }
+
+    transcript_response = requests.post(
+        f"{ASSEMBLYAI_API_URL}/transcript",
+        json=transcript_request,
+        headers=assemblyai_headers
+    )
+
+    if transcript_response.status_code != 200:
+        print("❌ Transcription request failed:", transcript_response.text)
+        return None
+
+    transcript_id = transcript_response.json()["id"]
+    print("🕒 Transcription ID:", transcript_id)
+
+    # Step 3: Poll for transcription result
+    while True:
+        polling_response = requests.get(
+            f"{ASSEMBLYAI_API_URL}/transcript/{transcript_id}",
+            headers=assemblyai_headers
+        )
+
+        if polling_response.status_code != 200:
+            print("❌ Polling failed:", polling_response.text)
+            return None
+
+        status = polling_response.json()["status"]
+        if status == "completed":
+            return polling_response.json()["text"]
+        elif status == "error":
+            print("❌ Transcription error:", polling_response.json()["error"])
+            return None
+
+        # Wait before polling again
+        import time
+        time.sleep(3)
+
 
 def refine_with_bert(text):
     """Refine transcription using BERT via Hugging Face API."""
     payload = {"inputs": text}
-    response = requests.post(BERT_API_URL, headers=headers, json=payload)
+    response = requests.post(BERT_API_URL, headers=assemblyai_headers, json=payload)
     if response.status_code == 200:
         return response.json()[0]["generated_text"]
     return text  # Fallback to original text if API fails
@@ -129,7 +197,7 @@ def refine_with_bert(text):
 def refine_with_t5(text):
     """Refine transcription using T5 via Hugging Face API."""
     payload = {"inputs": f"correct: {text}"}
-    response = requests.post(T5_API_URL, headers=headers, json=payload)
+    response = requests.post(T5_API_URL, headers=assemblyai_headers, json=payload)
     if response.status_code == 200:
         # Inspect the response structure
         response_data = response.json()
@@ -144,6 +212,12 @@ def refine_with_t5(text):
             return text
     return text  # Fallback to original text if API fails
 
+def convert_to_wav(audio_data, input_format):
+    audio = AudioSegment.from_file(BytesIO(audio_data), format=input_format)
+    wav_io = BytesIO()
+    audio.export(wav_io, format="wav")
+    return wav_io.getvalue()
+
 @app.route("/transcribe", methods=["POST"])
 def transcribe():
     """Endpoint to handle audio transcription and refinement."""
@@ -153,9 +227,19 @@ def transcribe():
     audio_file = request.files["file"]
     try:
         audio_data = audio_file.read()
+        filename = audio_file.filename.lower()
+
         if not audio_data:
             return jsonify({"error": "Uploaded file is empty"}), 400
 
+        # Detect and convert format if needed
+        if filename.endswith(".webm"):
+            audio_data = convert_to_wav(audio_data, "webm")
+        elif filename.endswith(".ogg"):
+            audio_data = convert_to_wav(audio_data, "ogg")
+        elif filename.endswith(".m4a"):
+            audio_data = convert_to_wav(audio_data, "m4a")
+            
         # Step 1: Transcribe audio using Wav2Vec 2.0
         transcription = transcribe_audio(audio_data)
         if not transcription:
